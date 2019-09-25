@@ -9,12 +9,94 @@
 
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+#include <ESP8266HTTPClient.h>    // for https://github.com/matt-williams/matrix-esp8266/blob/master/matrix-esp8266.ino
+
+HTTPClient http;
+String accessToken;
+String lastMessageToken;
+
+String createLoginBody(String user, String password) {
+  String buffer;
+  StaticJsonDocument<1000>  jsonBuffer;
+  //JsonObject& root = jsonBuffer.createObject();
+  jsonBuffer["type"] = "m.login.password";
+  jsonBuffer["user"] = user;
+  jsonBuffer["password"] = password;
+  jsonBuffer["identifier"]["type"] = "m.id.user";
+  jsonBuffer["identifier"]["user"] = user;
+  serializeJson(jsonBuffer, buffer);
+  return buffer;
+}
+
+String createMessageBody(String message) {
+  String buffer;
+  StaticJsonDocument<1000>  jsonBuffer;
+  jsonBuffer["msgtype"] = "m.text";
+  jsonBuffer["body"] = message;
+  serializeJson(jsonBuffer, buffer);
+  return buffer;
+}
+
+bool login(String user, String password) {
+  bool success = false;
+
+  String buffer;
+  buffer = createLoginBody(user, password);
+
+  String url = "http://corsanywhere.glitch.me/https://matrix.fuz.re/_matrix/client/r0/login";
+  // Serial.printf("POST %s\n", url.c_str());
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  int rc = http.POST(buffer);
+  Serial.printf("buffer %s\n", buffer.c_str());
+  if (rc > 0) {
+    Serial.printf("Login return code %d\n", rc);
+    if (rc == HTTP_CODE_OK) {
+      String body = http.getString();
+      StaticJsonDocument<1000>  jsonBuffer;
+      deserializeJson(jsonBuffer, body);
+      String myAccessToken = jsonBuffer["access_token"];
+      accessToken = String(myAccessToken.c_str());
+      Serial.println(accessToken);
+      success = true;
+    }
+  } else {
+    Serial.printf("Error: %s\n", http.errorToString(rc).c_str());
+  }
+
+  return success;
+}
+
+bool sendMessage(String roomId, String message) {
+  bool success = false;
+
+  String buffer;
+  buffer = createMessageBody(message);
+
+  String url = "http://corsanywhere.glitch.me/https://matrix.fuz.re/_matrix/client/r0/rooms/" + roomId + "/send/m.room.message/" + String(millis()) + "?access_token=" + accessToken + "&limit=1";
+  Serial.printf("PUT %s\n", url.c_str());
+
+  http.begin(url);
+  int rc = http.sendRequest("PUT", buffer);
+  if (rc > 0) {
+    //    Serial.printf("%d\n", rc);
+    if (rc == HTTP_CODE_OK) {
+      success = true;
+    }
+  } else {
+    Serial.printf("Error: %s\n", http.errorToString(rc).c_str());
+  }
+  return success;
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 //for LED status
 #include <Ticker.h>
 Ticker ticker;
 
-const byte LED_PIN = 13;
+const byte LED_PIN = 2; // 13 for Sonoff S20, 2 for NodeMCU/ESP12 internal LED
 const byte BUTTON_PIN = 0;
 
 void tick()
@@ -39,7 +121,7 @@ void configModeCallback (WiFiManager *myWiFiManager) {
 char matrixUsername[50];
 char matrixPassword[50];
 char matrixRoom[200] = "!ppCFWxNWJeGbyoNZVw:matrix.fuz.re"; // #entropy:matrix.fuz.re
-char matrixMessage[500] = "Test";
+char matrixMessage[500] = "Test from esp8266";
 
 //flag for saving data
 bool shouldSaveConfig = false;
@@ -66,6 +148,16 @@ void setup() {
 
   //clean FS, for testing
   //SPIFFS.format();
+  //show SPIFFS info for debug
+  //FSInfo fs_info;
+  //SPIFFS.info(fs_info);
+  //Serial.printf("SPIFFS: totalBytes: %u\n", fs_info.totalBytes);
+  //Serial.printf("SPIFFS: usedBytes : %u\n", fs_info.usedBytes);
+  //Serial.printf("SPIFFS: blockSize  : %u\n", fs_info.blockSize);
+  //Serial.printf("SPIFFS: pageSize      : %u\n", fs_info.pageSize);
+  //Serial.printf("SPIFFS: maxOpenFiles: %u\n", fs_info.maxOpenFiles);
+  //Serial.printf("SPIFFS: maxPathLength  : %u\n", fs_info.maxPathLength);
+
 
   //read configuration from FS json
   Serial.println(F("mounting FS..."));
@@ -83,7 +175,7 @@ void setup() {
         std::unique_ptr<char[]> buf(new char[size]);
 
         configFile.readBytes(buf.get(), size);
-        StaticJsonDocument<800> jsonBuffer;
+        StaticJsonDocument<1000> jsonBuffer;
         auto error = deserializeJson(jsonBuffer, buf.get());
         if (error) {
           Serial.print(F("deserializeJson() failed with code "));
@@ -178,7 +270,7 @@ void setup() {
   //save the custom parameters to FS
   if (shouldSaveConfig) {
     Serial.println(F("saving config"));
-    StaticJsonDocument<800> jsonBuffer;
+    StaticJsonDocument<1000> jsonBuffer;
     jsonBuffer["matrixUsername"] = matrixUsername;
     jsonBuffer["matrixPassword"] = matrixPassword;
     jsonBuffer["matrixRoom"] = matrixRoom;
@@ -198,6 +290,12 @@ void setup() {
 
   Serial.println(F("local ip:"));
   Serial.println(WiFi.localIP());
+
+  http.setReuse(true);
+  if (login(matrixUsername, matrixPassword)) {
+    Serial.println(F("Sucessfully athenticated"));
+    sendMessage(matrixRoom, matrixMessage);
+  }
 
 }
 
