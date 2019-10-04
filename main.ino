@@ -1,18 +1,55 @@
-#include <ESP8266WiFi.h>
-#include <ESP8266WiFiMulti.h>
+
+#include <FS.h>                   //this needs to be first, or it all crashes and burns...
+#include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
+//needed for library
+#include <DNSServer.h>
+#include <ESP8266WebServer.h>
+#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
 #define ARDUINOJSON_DECODE_UNICODE 1
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 
-ESP8266WiFiMulti wifiMulti;
+//for LED status
+#include <Ticker.h>
+Ticker ticker;
 
 const byte RELAY_PIN = 12;
 const byte LED_PIN = 13; // 13 for Sonoff S20, 2 for NodeMCU/ESP12 internal LED
 const byte BUTTON_PIN = 0;
 
-const String matrixUsername = "presence:matrix.fuz.re";
-const String matrixPassword = "XXX";
-const String matrixRoom = "!XXX:XXX";
-const String matrixMessage = "Test from Sonoff S20";
+void tick() {
+  //toggle state
+  bool state = digitalRead(LED_PIN);  // get the current state of LED_PIN pin
+  digitalWrite(LED_PIN, !state);     // set pin to the opposite state
+}
+
+//gets called when WiFiManager enters configuration mode (for LED status)
+void configModeCallback (WiFiManager *myWiFiManager) {
+  Serial.println("Entered config mode");
+  Serial.println(WiFi.softAPIP());
+  //if you used auto generated SSID, print it
+  Serial.println(myWiFiManager->getConfigPortalSSID());
+  //entered config mode, make led toggle faster
+  ticker.attach(0.2, tick);
+}
+
+
+//define your default values here, if there are different values in config.json, they are overwritten.
+String matrixUsername;
+String matrixPassword;
+String matrixRoom = "!ppCFWxNWJeGbyoNZVw:matrix.fuz.re"; // #entropy:matrix.fuz.re
+String matrixMessage = "Test";
+
+//flag for saving data
+bool shouldSaveConfig = false;
+
+//callback notifying us of the need to save config
+void saveConfigCallback () {
+  Serial.println(F("Should save config"));
+  shouldSaveConfig = true;
+}
+
+
+WiFiManager wifiManager;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #include <ESP8266HTTPClient.h>    // for https://github.com/matt-williams/matrix-esp8266/blob/master/matrix-esp8266.ino
@@ -131,9 +168,19 @@ bool getMessages(String roomId) {
         if (content.containsKey("body")) {
           String body = content["body"];
           Serial.println(body);
-          if (body.indexOf(matrixUsername.substring(0, matrixUsername.indexOf(":")) + ":") == 0) {
+          if (body.indexOf(matrixUsername.substring(0, matrixUsername.indexOf(":")) + ":") == 0 || body.indexOf("@" + matrixUsername) >= 0) {
             mentionedOnMatrix = true;
           }
+        }
+        //read receipt
+        if (chunk.containsKey("event_id")) {
+          String event_id = chunk["event_id"];
+          String receiptUrl = "http://corsanywhere.glitch.me/https://" + roomId.substring(roomId.indexOf(":") + 1) + "/_matrix/client/r0/rooms/" + roomId + "/receipt/m.read/" + event_id + "?access_token=" + accessToken + "&limit=1";
+          http.begin(receiptUrl);
+          http.addHeader("Content-Type", "application/json");
+          http.POST("");
+          String receiptBody = http.getString();
+          Serial.println("Receipt "+receiptBody);
         }
       }
       String myLastMessageToken = jsonBuffer["end"];
@@ -185,21 +232,144 @@ void setup() {
   //set button pin as input
   pinMode(BUTTON_PIN, INPUT);
 
-  WiFi.mode(WIFI_STA);
-  wifiMulti.addAP("XXX", "XXX");
-  wifiMulti.addAP("XXX", "XXX");
-  wifiMulti.addAP("XXX", "XXX");
+  // start ticker with 0.5 because we start in AP mode and try to connect
+  ticker.attach(0.6, tick);
 
-  Serial.println("Connecting Wifi");
-  while (wifiMulti.run() != WL_CONNECTED) { // Wait for the Wi-Fi to connect: scan for Wi-Fi networks, and connect to the strongest of the networks above
-    delay(1000);
-    Serial.print('.');
-    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+  Serial.println(F("mounting FS..."));
+
+  if (SPIFFS.begin()) {
+    Serial.println(F("mounted file system"));
+    if (SPIFFS.exists("/config.json")) {
+      //file exists, reading and loading
+      Serial.println(F("reading config file"));
+      File configFile = SPIFFS.open("/config.json", "r");
+      if (configFile) {
+        Serial.println(F("opened config file"));
+        size_t size = configFile.size();
+        // Allocate a buffer to store contents of the file.
+        std::unique_ptr<char[]> buf(new char[size]);
+
+        configFile.readBytes(buf.get(), size);
+        StaticJsonDocument<800> jsonBuffer;
+        auto error = deserializeJson(jsonBuffer, buf.get());
+        if (error) {
+          Serial.print(F("deserializeJson() failed with code "));
+          Serial.println(error.c_str());
+          return;
+        } else {
+          Serial.println(F("deserializeJson() successful:"));
+
+          serializeJsonPretty(jsonBuffer, Serial);
+          Serial.println();
+
+          String m0 = jsonBuffer["matrixUsername"];
+          matrixUsername = m0;
+          String m1 = jsonBuffer["matrixPassword"];
+          matrixPassword = m1;
+          String m2 = jsonBuffer["matrixRoom"];
+          matrixRoom = m2;
+          String m3 = jsonBuffer["matrixMessage"];
+          matrixMessage = m3;
+        }
+        configFile.close();
+      }
+    }
+  } else {
+    Serial.println(F("failed to mount FS"));
   }
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
+  //end read
+
+
+
+  // The extra parameters to be configured (can be either global or just in the setup)
+  // After connecting, parameter.getValue() will get you the configured value
+  // id/name placeholder/prompt default length
+  WiFiManagerParameter customMatrixUsername("Matrix username", "Matrix username", matrixUsername.c_str(), 50);
+  WiFiManagerParameter customMatrixPassword("Matrix password", "Matrix password", matrixPassword.c_str(), 50);
+  WiFiManagerParameter customMatrixRoom("Matrix room", "Matrix room", matrixRoom.c_str(), 200);
+  WiFiManagerParameter customMatrixMessage("Matrix message", "Matrix message", matrixMessage.c_str(), 500);
+
+  //WiFiManager
+  //Local intialization. Once its business is done, there is no need to keep it around
+  //WiFiManager wifiManager;
+  //reset settings - for testing
+  //wifiManager.resetSettings();
+
+  //set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode (for status LED)
+  wifiManager.setAPCallback(configModeCallback);
+
+  //set config save notify callback
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
+
+  //set static ip
+  //  wifiManager.setSTAStaticIPConfig(IPAddress(10,0,1,99), IPAddress(10,0,1,1), IPAddress(255,255,255,0));
+
+  //add all your parameters here
+  wifiManager.addParameter(&customMatrixUsername);
+  wifiManager.addParameter(&customMatrixPassword);
+  wifiManager.addParameter(&customMatrixRoom);
+  wifiManager.addParameter(&customMatrixMessage);
+
+  //reset settings - for testing
+  //wifiManager.resetSettings();
+
+  //set minimu quality of signal so it ignores AP's under that quality
+  //defaults to 8%
+  //wifiManager.setMinimumSignalQuality();
+
+  //sets timeout until configuration portal gets turned off
+  //useful to make it all retry or go to sleep
+  //in seconds
+  //wifiManager.setTimeout(120);
+
+  //fetches ssid and pass and tries to connect
+  //if it does not connect it starts an access point with the specified name
+  //here  "AutoConnectAP"
+  //and goes into a blocking loop awaiting configuration
+  if (!wifiManager.autoConnect()) {
+    Serial.println(F("failed to connect and hit timeout"));
+    delay(3000);
+    //reset and try again, or maybe put it to deep sleep
+    ESP.reset();
+    delay(5000);
+  }
+
+  //if you get here you have connected to the WiFi
+  Serial.println(F("connected...yeey :)"));
+  ticker.detach();
+  //keep LED on
+  digitalWrite(LED_PIN, LOW);
+
+  //read updated parameters
+  matrixUsername = customMatrixUsername.getValue();
+  matrixPassword = customMatrixPassword.getValue();
+  matrixRoom = customMatrixRoom.getValue();
+  matrixMessage = customMatrixMessage.getValue();
+
+  //save the custom parameters to FS
+  if (shouldSaveConfig) {
+    Serial.println(F("saving config"));
+    StaticJsonDocument<800> jsonBuffer;
+    jsonBuffer["matrixUsername"] = matrixUsername;
+    jsonBuffer["matrixPassword"] = matrixPassword;
+    jsonBuffer["matrixRoom"] = matrixRoom;
+    jsonBuffer["matrixMessage"] = matrixMessage;
+
+    File configFile = SPIFFS.open("/config.json", "w");
+    if (!configFile) {
+      Serial.println(F("failed to open config file for writing"));
+    }
+
+    serializeJson(jsonBuffer, Serial);
+    Serial.println();
+    serializeJson(jsonBuffer, configFile);
+    configFile.close();
+    //end save
+  }
+
+  Serial.println(F("local ip:"));
   Serial.println(WiFi.localIP());
+
   http.setReuse(true);
   loggedInMatrix = login(matrixUsername, matrixPassword);
   if (loggedInMatrix) {
@@ -220,9 +390,22 @@ bool buttonState = HIGH;
 bool previousButtonState = HIGH;
 long previousMillis = 0;
 const long getMatrixMessagesInterval = 5000;
+unsigned long pressedTime = millis();
 void loop() {
+  buttonState = digitalRead(BUTTON_PIN);
+  if (buttonState == LOW && previousButtonState == HIGH) { // long press handling, reset settings https://forum.arduino.cc/index.php?topic=276789.msg1947963#msg1947963
+    pressedTime = millis();
+  }
+  if (buttonState == LOW && previousButtonState == LOW && (millis() - pressedTime) > 5000) {
+    wifiManager.resetSettings();
+    SPIFFS.format();
+    delay(500);
+    ESP.reset();
+  }
+
   if (!loggedInMatrix) { // send SOS in morse
     morseSOSLED();
+    loggedInMatrix = login(matrixUsername, matrixPassword);
     return;
   }
   unsigned long currentMillis = millis();
@@ -238,8 +421,8 @@ void loop() {
     }
   }
 
-  buttonState = digitalRead(BUTTON_PIN);
   bool relayState = digitalRead(RELAY_PIN);
+
   if (buttonState == LOW && previousButtonState == HIGH && relayState == HIGH && sendMessage(matrixRoom, matrixMessage)) { // button just pressed while light is up
     delay(100);
     Serial.println("Button pressed");
