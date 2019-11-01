@@ -7,14 +7,17 @@
 #include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
 #define ARDUINOJSON_DECODE_UNICODE 1
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
+#include <ESP8266mDNS.h>          // https://tttapa.github.io/ESP8266/Chap08%20-%20mDNS.html
 
 //for LED status
 #include <Ticker.h>
 Ticker ticker;
 
 const byte RELAY_PIN = 12;
-const byte LED_PIN = 13; // 13 for Sonoff S20, 2 for NodeMCU/ESP12 internal LED
+const byte LED_PIN = 2; // 13 for Sonoff S20, 2 for NodeMCU/ESP12 internal LED
 const byte BUTTON_PIN = 0;
+
+bool fuzIsOpen = false;
 
 void tick() {
   //toggle state
@@ -161,7 +164,7 @@ bool getMessages(String roomId) {
         if (content.containsKey("formatted_body")) {
           String formatted_body = content["formatted_body"];
           Serial.println(formatted_body);
-          if (formatted_body.indexOf("<a href=\"https://matrix.to/#/@" + matrixUsername + "\">presence</a>") >= 0) {
+          if (formatted_body.indexOf("<a href=\"https://matrix.to/#/@" + matrixUsername + "\">" + matrixUsername.substring(0, matrixUsername.indexOf(":")) + "</a>") >= 0) {
             mentionedOnMatrix = true;
           }
         }
@@ -180,7 +183,7 @@ bool getMessages(String roomId) {
           http.addHeader("Content-Type", "application/json");
           http.POST("");
           String receiptBody = http.getString();
-          Serial.println("Receipt "+receiptBody);
+          Serial.println("Receipt " + receiptBody);
         }
       }
       String myLastMessageToken = jsonBuffer["end"];
@@ -195,6 +198,99 @@ bool getMessages(String roomId) {
   return success;
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+ESP8266WebServer httpServer(80); // webserver on port 80 https://github.com/esp8266/Arduino/blob/14262af0d19a9a3b992d5aa310a684d47b6fb876/libraries/ESP8266WebServer/examples/AdvancedWebServer/AdvancedWebServer.ino
+void handleRoot() {
+  String html =
+    String("<!DOCTYPE HTML><html>") +
+    "<head><meta charset=utf-8><title>presence</title></head><body>" +
+    "<a href='/admin'>Admin</a><br>" +
+    "<a href='/fuzisopen'>fuzisopen API</a><br><br>" +
+    "Rotating light:  " + String(digitalRead(RELAY_PIN) == HIGH) + "<br>" +
+    "Fuz is open:  " + String(fuzIsOpen) + "<br>" +
+    "</body></html>";
+  httpServer.send(200, "text/html", html);
+}
+void handleAdmin() {
+  if (!httpServer.authenticate(matrixUsername.c_str(), matrixPassword.c_str())) {
+    return httpServer.requestAuthentication();
+  }
+  for (int i = 0; i < httpServer.args(); i++) {
+    if (httpServer.argName(i) == "disablerotatinglight") {
+      digitalWrite(RELAY_PIN, LOW);
+      continue;
+    }
+    if (httpServer.argName(i) == "enablerotatinglight") {
+      digitalWrite(RELAY_PIN, HIGH);
+      continue;
+    }
+    if (httpServer.argName(i) == "setfuzisopen") {
+      fuzIsOpen = true;
+      continue;
+    }
+  }
+
+  if (httpServer.method() == HTTP_POST) {
+    for (int i = 0; i < httpServer.args(); i++) {
+      if (httpServer.argName(i) == "matrixUsername") {
+        matrixUsername = httpServer.arg(i);
+        continue;
+      }
+      if (httpServer.argName(i) == "matrixPassword") {
+        matrixPassword = httpServer.arg(i);
+        continue;
+      }
+      if (httpServer.argName(i) == "matrixRoom") {
+        matrixRoom = httpServer.arg(i);
+        continue;
+      }
+      if (httpServer.argName(i) == "matrixMessage") {
+        matrixMessage = httpServer.arg(i);
+        continue;
+      }
+    }
+    Serial.println(F("saving config"));
+    StaticJsonDocument<800> jsonBuffer;
+    jsonBuffer["matrixUsername"] = matrixUsername;
+    jsonBuffer["matrixPassword"] = matrixPassword;
+    jsonBuffer["matrixRoom"] = matrixRoom;
+    jsonBuffer["matrixMessage"] = matrixMessage;
+
+    File configFile = SPIFFS.open("/config.json", "w");
+    if (!configFile) {
+      Serial.println(F("failed to open config file for writing"));
+    }
+
+    serializeJson(jsonBuffer, Serial);
+    Serial.println();
+    serializeJson(jsonBuffer, configFile);
+    configFile.close();
+  }
+  if (httpServer.args() > 0 || httpServer.method() == HTTP_POST) { // trim GET parameters and prevent resubmiting same form on refresh
+    httpServer.sendHeader("Location", String("/admin"), true);
+    return httpServer.send(302, "text/plain", "");
+  }
+
+  String html =
+    String("<!DOCTYPE HTML><html>") +
+    "<head><meta charset=utf-8><title>presence admin</title></head><body>" +
+    (digitalRead(RELAY_PIN) == HIGH ? "<a href='?disablerotatinglight'>Disable rotating light</a>" : "<a href='?enablerotatinglight'>Enable rotating light</a>") + "<br>" +
+    (fuzIsOpen ? "" : "<a href='?setfuzisopen'>Set Fuz as open</a>") + "<br><br>" +
+    "<form method='post'>" +
+    "<div><label for='matrixUsername'>matrixUsername  </label><input name='matrixUsername' id='matrixUsername' value='" + matrixUsername + "'></div>" +
+    "<div><label for='matrixPassword'>matrixPassword  </label><input name='matrixPassword' id='matrixPassword' value='" + matrixPassword + "'></div>" +
+    "<div><label for='matrixRoom'>matrixRoom  </label><input name='matrixRoom' id='matrixRoom' value='" + matrixRoom + "'></div>" +
+    "<div><label for='matrixMessage'>matrixMessage  </label><input name='matrixMessage' id='matrixMessage' value='" + matrixMessage + "'></div>" +
+    "<div><button>Submit</button></div></form>"
+    "</body></html>";
+  httpServer.send(200, "text/html", html);
+}
+void handleFuzIsOpen() {
+  httpServer.send(200, "text/plain", String(fuzIsOpen));
+}
+void handleNotFound() {
+  httpServer.send(404, "text/plain", httpServer.uri() + " not found");
+}
 
 void morseSOSLED() { // ... ___ ...
   for (int i = 0; i < 3; i++) {
@@ -313,10 +409,6 @@ void setup() {
   //reset settings - for testing
   //wifiManager.resetSettings();
 
-  //set minimu quality of signal so it ignores AP's under that quality
-  //defaults to 8%
-  //wifiManager.setMinimumSignalQuality();
-
   //sets timeout until configuration portal gets turned off
   //useful to make it all retry or go to sleep
   //in seconds
@@ -369,6 +461,7 @@ void setup() {
 
   Serial.println(F("local ip:"));
   Serial.println(WiFi.localIP());
+  Serial.println(WiFi.SSID());
 
   http.setReuse(true);
   loggedInMatrix = login(matrixUsername, matrixPassword);
@@ -376,14 +469,22 @@ void setup() {
     Serial.println("Sucessfully athenticated");
     //keep LED on
     digitalWrite(LED_PIN, LOW);
-    //light up the light
+    //light up rotating light
     digitalWrite(RELAY_PIN, HIGH);
-  } else {
-    //switch LED off
-    digitalWrite(LED_PIN, HIGH);
-    //power down the light
-    digitalWrite(RELAY_PIN, LOW);
   }
+
+  httpServer.on("/", handleRoot);
+  httpServer.on("/admin", handleAdmin);
+  httpServer.on("/fuzisopen", handleFuzIsOpen);
+  httpServer.onNotFound(handleNotFound);
+  httpServer.begin();
+  Serial.println("HTTP server started");
+  if (!MDNS.begin("presence")) { // https://github.com/esp8266/Arduino/blob/14262af0d19a9a3b992d5aa310a684d47b6fb876/libraries/ESP8266mDNS/examples/mDNS_Web_Server/mDNS_Web_Server.ino
+    Serial.println("Error setting up MDNS responder!");
+  } else  {
+    Serial.println("mDNS responder started");
+  }
+  MDNS.addService("http", "tcp", 80);
 }
 
 bool buttonState = HIGH;
@@ -392,8 +493,13 @@ long previousMillis = 0;
 const long getMatrixMessagesInterval = 5000;
 unsigned long pressedTime = millis();
 void loop() {
+  MDNS.update();
+
+  httpServer.handleClient();
+
   buttonState = digitalRead(BUTTON_PIN);
   if (buttonState == LOW && previousButtonState == HIGH) { // long press handling, reset settings https://forum.arduino.cc/index.php?topic=276789.msg1947963#msg1947963
+    Serial.println("Button pressed (longpress handling)");
     pressedTime = millis();
   }
   if (buttonState == LOW && previousButtonState == LOW && (millis() - pressedTime) > 5000) {
@@ -427,6 +533,7 @@ void loop() {
     delay(100);
     Serial.println("Button pressed");
     digitalWrite(RELAY_PIN, LOW);
+    fuzIsOpen = true;
   }
   digitalWrite(LED_PIN, LOW); // light up the LED, in case we encounter temporary failure in getMessages()
   previousButtonState = buttonState;
