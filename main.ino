@@ -205,7 +205,6 @@ void handleRoot() {
     String("<!DOCTYPE HTML><html>") +
     "<head><meta charset=utf-8><title>presence</title></head><body>" +
     "<a href='/admin'>Admin</a><br>" +
-    "<a href='/fuzisopen'>fuzisopen API</a><br><br>" +
     "Rotating light:  " + String(digitalRead(RELAY_PIN) == HIGH) + "<br>" +
     "Fuz is open:  " + String(fuzIsOpen) + "<br>" +
     "</body></html>";
@@ -227,6 +226,13 @@ void handleAdmin() {
     if (httpServer.argName(i) == "setfuzisopen") {
       fuzIsOpen = true;
       continue;
+    }
+    if (httpServer.argName(i) == "resetesp") {
+      httpServer.sendHeader("Location", httpServer.uri(), true);
+      httpServer.send(302, "text/plain", "");
+      delay(500);
+      ESP.reset();
+      return;
     }
   }
 
@@ -267,7 +273,7 @@ void handleAdmin() {
     configFile.close();
   }
   if (httpServer.args() > 0 || httpServer.method() == HTTP_POST) { // trim GET parameters and prevent resubmiting same form on refresh
-    httpServer.sendHeader("Location", String("/admin"), true);
+    httpServer.sendHeader("Location", httpServer.uri(), true);
     return httpServer.send(302, "text/plain", "");
   }
 
@@ -275,7 +281,8 @@ void handleAdmin() {
     String("<!DOCTYPE HTML><html>") +
     "<head><meta charset=utf-8><title>presence admin</title></head><body>" +
     (digitalRead(RELAY_PIN) == HIGH ? "<a href='?disablerotatinglight'>Disable rotating light</a>" : "<a href='?enablerotatinglight'>Enable rotating light</a>") + "<br>" +
-    (fuzIsOpen ? "" : "<a href='?setfuzisopen'>Set Fuz as open</a>") + "<br><br>" +
+    (fuzIsOpen ? "" : "<a href='?setfuzisopen'>Set Fuz as open</a>") + "<br>" +
+    "<a href='?resetesp'>Reboot ESP</a>" + "<br><br>" +
     "<form method='post'>" +
     "<div><label for='matrixUsername'>matrixUsername  </label><input name='matrixUsername' id='matrixUsername' value='" + matrixUsername + "'></div>" +
     "<div><label for='matrixPassword'>matrixPassword  </label><input name='matrixPassword' id='matrixPassword' value='" + matrixPassword + "'></div>" +
@@ -284,9 +291,6 @@ void handleAdmin() {
     "<div><button>Submit</button></div></form>"
     "</body></html>";
   httpServer.send(200, "text/html", html);
-}
-void handleFuzIsOpen() {
-  httpServer.send(200, "text/plain", String(fuzIsOpen));
 }
 void handleNotFound() {
   httpServer.send(404, "text/plain", httpServer.uri() + " not found");
@@ -314,6 +318,14 @@ void morseSOSLED() { // ... ___ ...
     delay(100);
   }
   delay(500);
+}
+
+void notifyFuzIsOpen() {
+  HTTPClient http;
+  http.begin("http://presence-button.glitch.me/status?fuzisopen=" + String(fuzIsOpen));
+  http.setAuthorization(matrixUsername.c_str(), matrixPassword.c_str());
+  http.GET();
+  Serial.println("GET status body: " + http.getString());
 }
 
 bool loggedInMatrix = false;
@@ -475,7 +487,6 @@ void setup() {
 
   httpServer.on("/", handleRoot);
   httpServer.on("/admin", handleAdmin);
-  httpServer.on("/fuzisopen", handleFuzIsOpen);
   httpServer.onNotFound(handleNotFound);
   httpServer.begin();
   Serial.println("HTTP server started");
@@ -525,6 +536,7 @@ void loop() {
       digitalWrite(RELAY_PIN, HIGH);
       mentionedOnMatrix = false;
     }
+    notifyFuzIsOpen();
   }
 
   bool relayState = digitalRead(RELAY_PIN);
