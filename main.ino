@@ -14,7 +14,7 @@
 Ticker ticker;
 
 const byte RELAY_PIN = 12;
-const byte LED_PIN = 2; // 13 for Sonoff S20, 2 for NodeMCU/ESP12 internal LED
+const byte LED_PIN = 13; // 13 for Sonoff S20, 2 for NodeMCU/ESP12 internal LED
 const byte BUTTON_PIN = 0;
 
 bool fuzIsOpen = false;
@@ -320,12 +320,14 @@ void morseSOSLED() { // ... ___ ...
   delay(500);
 }
 
+HTTPClient http2;
+// http2.setReuse(true);
 void notifyFuzIsOpen() {
-  HTTPClient http;
-  http.begin("http://presence-button.glitch.me/status?fuzisopen=" + String(fuzIsOpen));
-  http.setAuthorization(matrixUsername.c_str(), matrixPassword.c_str());
-  http.GET();
-  Serial.println("GET status body: " + http.getString());
+  http2.begin("http://presence-button.glitch.me/status?fuzisopen=" + String(fuzIsOpen));
+  http2.setAuthorization(matrixUsername.c_str(), matrixPassword.c_str());
+  int httpCode = http2.GET();
+  Serial.println("GET status return code: " + String(httpCode));
+  http2.end();
 }
 
 bool loggedInMatrix = false;
