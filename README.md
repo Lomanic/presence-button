@@ -6,7 +6,8 @@ More info on [Fuz wiki](https://wiki.fuz.re/doku.php?id=projets:fuz:presence_but
 
 ## Dependencies
 
-Developped with the Arduino IDE, the script relies on the following third-party libraries:
+Developed with the Arduino IDE, the script relies on the following third-party libraries:
 
-* https://arduinojson.org/ v6
-* https://github.com/tzapu/WiFiManager
+* https://arduinojson.org/ v6 6.13.0
+* https://github.com/tzapu/WiFiManager 0.15.0-beta
+* https://github.com/krzychb/EspSaveCrash 1.0.2

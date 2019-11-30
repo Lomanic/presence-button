@@ -9,6 +9,10 @@
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 #include <ESP8266mDNS.h>          // https://tttapa.github.io/ESP8266/Chap08%20-%20mDNS.html
 
+
+#include "EspSaveCrash.h"         //DEBUG https://github.com/krzychb/EspSaveCrash
+//EspSaveCrash SaveCrash;
+
 //for LED status
 #include <Ticker.h>
 Ticker ticker;
@@ -334,6 +338,8 @@ bool loggedInMatrix = false;
 void setup() {
   Serial.begin(115200);
   Serial.println();
+
+  SaveCrash.print(); // DEBUG
 
   //set relay pin as output
   pinMode(RELAY_PIN, OUTPUT);
