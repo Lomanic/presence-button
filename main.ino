@@ -94,25 +94,25 @@ bool login(String user, String password) {
   buffer = createLoginBody(user.substring(0, user.indexOf(":")), password);
 
   String url = "http://corsanywhere.glitch.me/https://" + user.substring(user.indexOf(":") + 1) + "/_matrix/client/r0/login";
-  // Serial.printf("POST %s\n", url.c_str());
+  // Serial.printf("[login] POST %s\n", url.c_str());
 
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
   int rc = http.POST(buffer);
   Serial.printf("buffer %s\n", buffer.c_str());
   if (rc > 0) {
-    Serial.printf("Login return code %d\n", rc);
+    Serial.printf("[login] Login return code %d\n", rc);
     if (rc == HTTP_CODE_OK) {
       String body = http.getString();
       StaticJsonDocument<1000>  jsonBuffer;
       deserializeJson(jsonBuffer, body);
       String myAccessToken = jsonBuffer["access_token"];
       accessToken = String(myAccessToken.c_str());
-      Serial.println(accessToken);
+      Serial.printf("[login] %s\n", accessToken.c_str());
       success = true;
     }
   } else {
-    Serial.printf("Error: %s\n", http.errorToString(rc).c_str());
+    Serial.printf("[login] Error: %s\n", http.errorToString(rc).c_str());
   }
 
   return success;
@@ -125,19 +125,32 @@ bool sendMessage(String roomId, String message) {
   buffer = createMessageBody(message);
 
   String url = "http://corsanywhere.glitch.me/https://" + roomId.substring(roomId.indexOf(":") + 1) + "/_matrix/client/r0/rooms/" + roomId + "/send/m.room.message/" + String(millis()) + "?access_token=" + accessToken + "&limit=1";
-  Serial.printf("PUT %s\n", url.c_str());
+  Serial.printf("[sendMessage] PUT %s\n", url.c_str());
 
   http.begin(url);
   int rc = http.sendRequest("PUT", buffer);
   if (rc > 0) {
-    //    Serial.printf("%d\n", rc);
+    Serial.printf("[sendMessage] %d\n", rc);
     if (rc == HTTP_CODE_OK) {
       success = true;
     }
   } else {
-    Serial.printf("Error: %s\n", http.errorToString(rc).c_str());
+    Serial.printf("[sendMessage] Error: %s\n", http.errorToString(rc).c_str());
   }
   return success;
+}
+
+// sendMessageToMultiRooms calls sendMessage for each Matrix room separated by a space character in roomId
+bool sendMessageToMultiRooms(String roomId, String message) {
+  yield(); // just in case
+  int pos = roomId.indexOf(" ");
+  if (pos != -1) {
+    if (!sendMessage(roomId.substring(0, pos), message)) {
+      return false;
+    }
+    return sendMessageToMultiRooms(roomId.substring(pos + 1), message);
+  }
+  return sendMessage(roomId, message);
 }
 
 bool mentionedOnMatrix = false;
@@ -150,12 +163,12 @@ bool getMessages(String roomId) {
   } else {
     url += "&dir=f&from=" + lastMessageToken;
   }
-  Serial.printf("GET %s\n", url.c_str());
+  Serial.printf("[getMessages] GET %s\n", url.c_str());
 
   http.begin(url);
   int rc = http.GET();
   if (rc > 0) {
-    Serial.printf("%d\n", rc);
+    Serial.printf("[getMessages] %d\n", rc);
     if (rc == HTTP_CODE_OK) {
       String body = http.getString();
       StaticJsonDocument<1000> jsonBuffer;
@@ -167,14 +180,14 @@ bool getMessages(String roomId) {
         JsonObject content = chunk["content"];
         if (content.containsKey("formatted_body")) {
           String formatted_body = content["formatted_body"];
-          Serial.println(formatted_body);
+          Serial.printf("[getMessages] Last message formatted_body: %s\n", formatted_body.c_str());
           if (formatted_body.indexOf("<a href=\"https://matrix.to/#/@" + matrixUsername + "\">" + matrixUsername.substring(0, matrixUsername.indexOf(":")) + "</a>") >= 0) {
             mentionedOnMatrix = true;
           }
         }
         if (content.containsKey("body")) {
           String body = content["body"];
-          Serial.println(body);
+          Serial.printf("[getMessages] Last message body: %s\n", body.c_str());
           if (body.indexOf(matrixUsername.substring(0, matrixUsername.indexOf(":")) + ":") == 0 || body.indexOf("@" + matrixUsername) >= 0) {
             mentionedOnMatrix = true;
           }
@@ -182,12 +195,12 @@ bool getMessages(String roomId) {
         //read receipt
         if (chunk.containsKey("event_id")) {
           String event_id = chunk["event_id"];
-          String receiptUrl = "http://corsanywhere.glitch.me/https://" + roomId.substring(roomId.indexOf(":") + 1) + "/_matrix/client/r0/rooms/" + roomId + "/receipt/m.read/" + event_id + "?access_token=" + accessToken + "&limit=1";
+          String receiptUrl = "http://corsanywhere.glitch.me/https://" + roomId.substring(roomId.indexOf(":") + 1) + "/_matrix/client/r0/rooms/" + roomId + "/receipt/m.read/" + event_id + "?access_token=" + accessToken;
           http.begin(receiptUrl);
           http.addHeader("Content-Type", "application/json");
           http.POST("");
           String receiptBody = http.getString();
-          Serial.println("Receipt " + receiptBody);
+          Serial.println("[getMessages] Receipt " + receiptBody);
         }
       }
       String myLastMessageToken = jsonBuffer["end"];
@@ -196,10 +209,23 @@ bool getMessages(String roomId) {
       success = true;
     }
   } else {
-    Serial.printf("Error: %s\n", http.errorToString(rc).c_str());
+    Serial.printf("[getMessages] Error: %s\n", http.errorToString(rc).c_str());
   }
 
   return success;
+}
+
+// getMessageFromMultiRooms calls sendMessage for each Matrix room separated by a space character in roomId
+bool getMessagesFromMultiRooms(String roomId) {
+  yield(); // just in case
+  int pos = roomId.indexOf(" ");
+  if (pos != -1) {
+    if (!getMessages(roomId.substring(0, pos))) {
+      return false;
+    }
+    return getMessagesFromMultiRooms(roomId.substring(pos + 1));
+  }
+  return getMessages(roomId);
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -327,10 +353,11 @@ void morseSOSLED() { // ... ___ ...
 HTTPClient http2;
 // http2.setReuse(true);
 void notifyFuzIsOpen() {
+  yield(); // just in case
   http2.begin("http://presence-button.glitch.me/status?fuzisopen=" + String(fuzIsOpen));
   http2.setAuthorization(matrixUsername.c_str(), matrixPassword.c_str());
   int httpCode = http2.GET();
-  Serial.println("GET status return code: " + String(httpCode));
+  Serial.println("[notifyFuzIsOpen] Ping GET status return code: " + String(httpCode));
   http2.end();
 }
 
@@ -486,7 +513,7 @@ void setup() {
   http.setReuse(true);
   loggedInMatrix = login(matrixUsername, matrixPassword);
   if (loggedInMatrix) {
-    Serial.println("Sucessfully athenticated");
+    Serial.println(F("Sucessfully athenticated"));
     //keep LED on
     digitalWrite(LED_PIN, LOW);
     //light up rotating light
@@ -518,7 +545,7 @@ void loop() {
 
   buttonState = digitalRead(BUTTON_PIN);
   if (buttonState == LOW && previousButtonState == HIGH) { // long press handling, reset settings https://forum.arduino.cc/index.php?topic=276789.msg1947963#msg1947963
-    Serial.println("Button pressed (longpress handling)");
+    Serial.println(F("Button pressed (longpress handling)"));
     pressedTime = millis();
   }
   if (buttonState == LOW && previousButtonState == LOW && (millis() - pressedTime) > 5000) {
@@ -536,7 +563,7 @@ void loop() {
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis > getMatrixMessagesInterval) {
     previousMillis = currentMillis;
-    if (!getMessages(matrixRoom)) {
+    if (!getMessagesFromMultiRooms(matrixRoom)) {
       morseSOSLED();
       return;
     }
@@ -549,7 +576,7 @@ void loop() {
 
   bool relayState = digitalRead(RELAY_PIN);
 
-  if (buttonState == LOW && previousButtonState == HIGH && relayState == HIGH && sendMessage(matrixRoom, matrixMessage)) { // button just pressed while light is up
+  if (buttonState == LOW && previousButtonState == HIGH && relayState == HIGH && sendMessageToMultiRooms(matrixRoom, matrixMessage)) { // button just pressed while light is up, send message on Matrix
     delay(100);
     Serial.println("Button pressed");
     digitalWrite(RELAY_PIN, LOW);
