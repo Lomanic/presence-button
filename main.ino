@@ -9,6 +9,8 @@
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 #include <ESP8266mDNS.h>          // https://tttapa.github.io/ESP8266/Chap08%20-%20mDNS.html
 
+#include <WiFiClientSecure.h> 
+
 //for LED status
 #include <Ticker.h>
 Ticker ticker;
@@ -258,10 +260,11 @@ void morseSOSLED() { // ... ___ ...
   delay(500);
 }
 
+BearSSL::WiFiClientSecure secureClient;
 HTTPClient http2;
 // http2.setReuse(true);
 void notifyFuzIsOpen() {
-  http2.begin("http://presence-button.glitch.me/status?fuzisopen=" + String(fuzIsOpen));
+  http2.begin(secureClient, "https://presence-button.glitch.me/status?fuzisopen=" + String(fuzIsOpen));
   http2.setAuthorization(matrixUsername.c_str(), matrixPassword.c_str());
   int httpCode = http2.GET();
   Serial.println("GET status return code: " + String(httpCode));
@@ -436,6 +439,8 @@ void setup() {
     Serial.println("mDNS responder started");
   }
   MDNS.addService("http", "tcp", 80);
+
+  secureClient.setInsecure();
 }
 
 bool buttonState = HIGH;
@@ -480,6 +485,6 @@ void loop() {
     digitalWrite(RELAY_PIN, LOW);
     fuzIsOpen = true;
   }
-  digitalWrite(LED_PIN, LOW); // light up the LED, in case we encounter temporary failure in getMessages()
+  digitalWrite(LED_PIN, LOW); // ensure the LED is lit
   previousButtonState = buttonState;
 }
