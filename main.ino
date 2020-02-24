@@ -135,68 +135,6 @@ bool sendMessage(String roomId, String message) {
   }
   return success;
 }
-
-bool mentionedOnMatrix = false;
-bool getMessages(String roomId) {
-  bool success = false;
-
-  String url = "http://corsanywhere.glitch.me/https://" + roomId.substring(roomId.indexOf(":") + 1) + "/_matrix/client/r0/rooms/" + roomId + "/messages?access_token=" + accessToken + "&limit=1";
-  if (lastMessageToken == "") {
-    url += "&dir=b";
-  } else {
-    url += "&dir=f&from=" + lastMessageToken;
-  }
-  Serial.printf("GET %s\n", url.c_str());
-
-  http.begin(url);
-  int rc = http.GET();
-  if (rc > 0) {
-    Serial.printf("%d\n", rc);
-    if (rc == HTTP_CODE_OK) {
-      String body = http.getString();
-      StaticJsonDocument<1000> jsonBuffer;
-      deserializeJson(jsonBuffer, body);
-      if (lastMessageToken != "") {
-        JsonArray chunks = jsonBuffer["chunk"];
-        JsonObject chunk = chunks[0];
-        String format = chunk["format"];
-        JsonObject content = chunk["content"];
-        if (content.containsKey("formatted_body")) {
-          String formatted_body = content["formatted_body"];
-          Serial.println(formatted_body);
-          if (formatted_body.indexOf("<a href=\"https://matrix.to/#/@" + matrixUsername + "\">" + matrixUsername.substring(0, matrixUsername.indexOf(":")) + "</a>") >= 0) {
-            mentionedOnMatrix = true;
-          }
-        }
-        if (content.containsKey("body")) {
-          String body = content["body"];
-          Serial.println(body);
-          if (body.indexOf(matrixUsername.substring(0, matrixUsername.indexOf(":")) + ":") == 0 || body.indexOf("@" + matrixUsername) >= 0) {
-            mentionedOnMatrix = true;
-          }
-        }
-        //read receipt
-        if (chunk.containsKey("event_id")) {
-          String event_id = chunk["event_id"];
-          String receiptUrl = "http://corsanywhere.glitch.me/https://" + roomId.substring(roomId.indexOf(":") + 1) + "/_matrix/client/r0/rooms/" + roomId + "/receipt/m.read/" + event_id + "?access_token=" + accessToken + "&limit=1";
-          http.begin(receiptUrl);
-          http.addHeader("Content-Type", "application/json");
-          http.POST("");
-          String receiptBody = http.getString();
-          Serial.println("Receipt " + receiptBody);
-        }
-      }
-      String myLastMessageToken = jsonBuffer["end"];
-      lastMessageToken = String(myLastMessageToken.c_str());
-      //Serial.println(lastMessageToken);
-      success = true;
-    }
-  } else {
-    Serial.printf("Error: %s\n", http.errorToString(rc).c_str());
-  }
-
-  return success;
-}
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 ESP8266WebServer httpServer(80); // webserver on port 80 https://github.com/esp8266/Arduino/blob/14262af0d19a9a3b992d5aa310a684d47b6fb876/libraries/ESP8266WebServer/examples/AdvancedWebServer/AdvancedWebServer.ino
@@ -522,23 +460,16 @@ void loop() {
     ESP.reset();
   }
 
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis > getMatrixMessagesInterval) {
+    previousMillis = currentMillis;
+    notifyFuzIsOpen();
+  }
+
   if (!loggedInMatrix) { // send SOS in morse
     morseSOSLED();
     loggedInMatrix = login(matrixUsername, matrixPassword);
     return;
-  }
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis > getMatrixMessagesInterval) {
-    previousMillis = currentMillis;
-    if (!getMessages(matrixRoom)) {
-      morseSOSLED();
-      return;
-    }
-    if (mentionedOnMatrix) {
-      digitalWrite(RELAY_PIN, HIGH);
-      mentionedOnMatrix = false;
-    }
-    notifyFuzIsOpen();
   }
 
   bool relayState = digitalRead(RELAY_PIN);
