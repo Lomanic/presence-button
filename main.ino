@@ -1,4 +1,3 @@
-
 #include <FS.h>                   //this needs to be first, or it all crashes and burns...
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
 //needed for library
@@ -15,13 +14,13 @@
 #include <Ticker.h>
 Ticker ticker;
 
-const byte RELAY_PIN = 12;
-const byte LED_PIN = 13; // 13 for Sonoff S20, 2 for NodeMCU/ESP12 internal LED
+const byte RELAY_PIN = D2; // SHOULD BE 12 for Sonoff S20
+const byte LED_PIN = LED_BUILTIN; // 13 for Sonoff S20, 2 for NodeMCU/ESP12 internal LED
 const byte BUTTON_PIN = 0;
 
 bool fuzIsOpen = false;
 
-void tick() {
+void blinkLED() {
   //toggle state
   bool state = digitalRead(LED_PIN);  // get the current state of LED_PIN pin
   digitalWrite(LED_PIN, !state);     // set pin to the opposite state
@@ -34,7 +33,7 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   //if you used auto generated SSID, print it
   Serial.println(myWiFiManager->getConfigPortalSSID());
   //entered config mode, make led toggle faster
-  ticker.attach(0.2, tick);
+  ticker.attach(0.5, blinkLED);
 }
 
 
@@ -56,88 +55,7 @@ void saveConfigCallback () {
 
 WiFiManager wifiManager;
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #include <ESP8266HTTPClient.h>    // for https://github.com/matt-williams/matrix-esp8266/blob/master/matrix-esp8266.ino
-
-HTTPClient http;
-String accessToken;
-String lastMessageToken;
-
-String createLoginBody(String user, String password) {
-  String buffer;
-  StaticJsonDocument<1000> jsonBuffer;
-  //JsonObject& root = jsonBuffer.createObject();
-  jsonBuffer["type"] = "m.login.password";
-  jsonBuffer["user"] = user;
-  jsonBuffer["password"] = password;
-  jsonBuffer["identifier"]["type"] = "m.id.user";
-  jsonBuffer["identifier"]["user"] = user;
-  serializeJson(jsonBuffer, buffer);
-  return buffer;
-}
-
-String createMessageBody(String message) {
-  String buffer;
-  StaticJsonDocument<1000> jsonBuffer;
-  jsonBuffer["msgtype"] = "m.text";
-  jsonBuffer["body"] = message;
-  serializeJson(jsonBuffer, buffer);
-  return buffer;
-}
-
-bool login(String user, String password) {
-  bool success = false;
-
-  String buffer;
-  buffer = createLoginBody(user.substring(0, user.indexOf(":")), password);
-
-  String url = "http://corsanywhere.glitch.me/https://" + user.substring(user.indexOf(":") + 1) + "/_matrix/client/r0/login";
-  // Serial.printf("POST %s\n", url.c_str());
-
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
-  int rc = http.POST(buffer);
-  Serial.printf("buffer %s\n", buffer.c_str());
-  if (rc > 0) {
-    Serial.printf("Login return code %d\n", rc);
-    if (rc == HTTP_CODE_OK) {
-      String body = http.getString();
-      StaticJsonDocument<1000>  jsonBuffer;
-      deserializeJson(jsonBuffer, body);
-      String myAccessToken = jsonBuffer["access_token"];
-      accessToken = String(myAccessToken.c_str());
-      Serial.println(accessToken);
-      success = true;
-    }
-  } else {
-    Serial.printf("Error: %s\n", http.errorToString(rc).c_str());
-  }
-
-  return success;
-}
-
-bool sendMessage(String roomId, String message) {
-  bool success = false;
-
-  String buffer;
-  buffer = createMessageBody(message);
-
-  String url = "http://corsanywhere.glitch.me/https://" + roomId.substring(roomId.indexOf(":") + 1) + "/_matrix/client/r0/rooms/" + roomId + "/send/m.room.message/" + String(millis()) + "?access_token=" + accessToken + "&limit=1";
-  Serial.printf("PUT %s\n", url.c_str());
-
-  http.begin(url);
-  int rc = http.sendRequest("PUT", buffer);
-  if (rc > 0) {
-    //    Serial.printf("%d\n", rc);
-    if (rc == HTTP_CODE_OK) {
-      success = true;
-    }
-  } else {
-    Serial.printf("Error: %s\n", http.errorToString(rc).c_str());
-  }
-  return success;
-}
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 ESP8266WebServer httpServer(80); // webserver on port 80 https://github.com/esp8266/Arduino/blob/14262af0d19a9a3b992d5aa310a684d47b6fb876/libraries/ESP8266WebServer/examples/AdvancedWebServer/AdvancedWebServer.ino
 void handleRoot() {
@@ -196,7 +114,8 @@ void handleAdmin() {
       }
     }
     Serial.println(F("saving config"));
-    StaticJsonDocument<800> jsonBuffer;
+    const size_t capacity = JSON_OBJECT_SIZE(4) + 440; // https://arduinojson.org/v6/assistant/
+    DynamicJsonDocument jsonBuffer(capacity);
     jsonBuffer["matrixUsername"] = matrixUsername;
     jsonBuffer["matrixPassword"] = matrixPassword;
     jsonBuffer["matrixRoom"] = matrixRoom;
@@ -236,39 +155,19 @@ void handleNotFound() {
   httpServer.send(404, "text/plain", httpServer.uri() + " not found");
 }
 
-void morseSOSLED() { // ... ___ ...
-  for (int i = 0; i < 3; i++) {
-    digitalWrite(LED_PIN, LOW); // lit up
-    delay(100);
-    digitalWrite(LED_PIN, HIGH); // lit down
-    delay(100);
-  }
-  delay(50);
-  for (int i = 0; i < 3; i++) {
-    digitalWrite(LED_PIN, LOW); // lit up
-    delay(300);
-    digitalWrite(LED_PIN, HIGH); // lit down
-    delay(100);
-  }
-  delay(50);
-  for (int i = 0; i < 3; i++) {
-    digitalWrite(LED_PIN, LOW); // lit up
-    delay(100);
-    digitalWrite(LED_PIN, HIGH); // lit down
-    delay(100);
-  }
-  delay(500);
-}
-
 BearSSL::WiFiClientSecure secureClient;
-HTTPClient http2;
-// http2.setReuse(true);
-void notifyFuzIsOpen() {
-  http2.begin(secureClient, "https://presence-button.glitch.me/status?fuzisopen=" + String(fuzIsOpen));
-  http2.setAuthorization(matrixUsername.c_str(), matrixPassword.c_str());
-  int httpCode = http2.GET();
-  Serial.println("GET status return code: " + String(httpCode));
-  http2.end();
+HTTPClient http;
+void notifyFuzIsOpen(bool fuzIsOpen) {
+  http.begin(secureClient, "https://presence-button-staging.glitch.me/status?fuzisopen=" + String(fuzIsOpen));
+  http.setAuthorization(matrixUsername.c_str(), matrixPassword.c_str());
+  int httpCode = http.GET();
+  Serial.println("notifyFuzIsOpen return code: " + String(httpCode));
+  http.end();
+  if(httpCode != 200){ // something is wrong, bad network or misconfigured credentials
+    ticker.attach(0.1, blinkLED);
+  } else {
+    ticker.detach();
+  }
 }
 
 bool loggedInMatrix = false;
@@ -283,8 +182,8 @@ void setup() {
   //set button pin as input
   pinMode(BUTTON_PIN, INPUT);
 
-  // start ticker with 0.5 because we start in AP mode and try to connect
-  ticker.attach(0.6, tick);
+  // start ticker with 1 because we start in AP mode and try to connect
+  ticker.attach(1.1, blinkLED);
 
   Serial.println(F("mounting FS..."));
 
@@ -301,7 +200,8 @@ void setup() {
         std::unique_ptr<char[]> buf(new char[size]);
 
         configFile.readBytes(buf.get(), size);
-        StaticJsonDocument<800> jsonBuffer;
+        const size_t capacity = JSON_OBJECT_SIZE(4) + 440; // https://arduinojson.org/v6/assistant/
+        DynamicJsonDocument jsonBuffer(capacity);
         auto error = deserializeJson(jsonBuffer, buf.get());
         if (error) {
           Serial.print(F("deserializeJson() failed with code "));
@@ -396,7 +296,8 @@ void setup() {
   //save the custom parameters to FS
   if (shouldSaveConfig) {
     Serial.println(F("saving config"));
-    StaticJsonDocument<800> jsonBuffer;
+    const size_t capacity = JSON_OBJECT_SIZE(4) + 440; // https://arduinojson.org/v6/assistant/
+    DynamicJsonDocument jsonBuffer(capacity);
     jsonBuffer["matrixUsername"] = matrixUsername;
     jsonBuffer["matrixPassword"] = matrixPassword;
     jsonBuffer["matrixRoom"] = matrixRoom;
@@ -417,16 +318,6 @@ void setup() {
   Serial.println(F("local ip:"));
   Serial.println(WiFi.localIP());
   Serial.println(WiFi.SSID());
-
-  http.setReuse(true);
-  loggedInMatrix = login(matrixUsername, matrixPassword);
-  if (loggedInMatrix) {
-    Serial.println("Sucessfully athenticated");
-    //keep LED on
-    digitalWrite(LED_PIN, LOW);
-    //light up rotating light
-    digitalWrite(RELAY_PIN, HIGH);
-  }
 
   httpServer.on("/", handleRoot);
   httpServer.on("/admin", handleAdmin);
@@ -459,6 +350,7 @@ void loop() {
     pressedTime = millis();
   }
   if (buttonState == LOW && previousButtonState == LOW && (millis() - pressedTime) > 5000) {
+    Serial.println("Button STILL pressed (longpress handling)");
     wifiManager.resetSettings();
     SPIFFS.format();
     delay(500);
@@ -468,18 +360,16 @@ void loop() {
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis > getMatrixMessagesInterval) {
     previousMillis = currentMillis;
-    notifyFuzIsOpen();
+    notifyFuzIsOpen(fuzIsOpen);
   }
 
-  if (!loggedInMatrix) { // send SOS in morse
-    morseSOSLED();
-    loggedInMatrix = login(matrixUsername, matrixPassword);
-    return;
+  if(!fuzIsOpen){
+    digitalWrite(RELAY_PIN, HIGH);
   }
 
   bool relayState = digitalRead(RELAY_PIN);
 
-  if (buttonState == LOW && previousButtonState == HIGH && relayState == HIGH && sendMessage(matrixRoom, matrixMessage)) { // button just pressed while light is up
+  if (buttonState == LOW && previousButtonState == HIGH /* && relayState == HIGH*/) { // button just pressed while light is up
     delay(100);
     Serial.println("Button pressed");
     digitalWrite(RELAY_PIN, LOW);
