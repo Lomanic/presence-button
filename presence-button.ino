@@ -8,11 +8,11 @@
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 #include <ESP8266mDNS.h>          // https://tttapa.github.io/ESP8266/Chap08%20-%20mDNS.html
 
-#include <WiFiClientSecure.h> 
+#include <WiFiClientSecure.h>
 
 //for LED status
 #include <Ticker.h>
-Ticker ticker;
+Ticker ledTicker;
 
 const byte RELAY_PIN = D2; // SHOULD BE 12 for Sonoff S20
 const byte LED_PIN = LED_BUILTIN; // 13 for Sonoff S20, 2 for NodeMCU/ESP12 internal LED
@@ -33,15 +33,14 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   //if you used auto generated SSID, print it
   Serial.println(myWiFiManager->getConfigPortalSSID());
   //entered config mode, make led toggle faster
-  ticker.attach(0.5, blinkLED);
+  ledTicker.attach(0.5, blinkLED);
 }
 
 
 //define your default values here, if there are different values in config.json, they are overwritten.
 String matrixUsername;
 String matrixPassword;
-String matrixRoom = "!ppCFWxNWJeGbyoNZVw:matrix.fuz.re"; // #entropy:matrix.fuz.re
-String matrixMessage = "Test";
+String notifiedEndpoint = "https://presence-button-staging.glitch.me/status?fuzisopen="; // #entropy:matrix.fuz.re
 
 //flag for saving data
 bool shouldSaveConfig = false;
@@ -104,22 +103,17 @@ void handleAdmin() {
         matrixPassword = httpServer.arg(i);
         continue;
       }
-      if (httpServer.argName(i) == "matrixRoom") {
-        matrixRoom = httpServer.arg(i);
-        continue;
-      }
-      if (httpServer.argName(i) == "matrixMessage") {
-        matrixMessage = httpServer.arg(i);
+      if (httpServer.argName(i) == "notifiedEndpoint") {
+        notifiedEndpoint = httpServer.arg(i);
         continue;
       }
     }
     Serial.println(F("saving config"));
-    const size_t capacity = JSON_OBJECT_SIZE(4) + 440; // https://arduinojson.org/v6/assistant/
+    const size_t capacity = JSON_OBJECT_SIZE(3) + 440; // https://arduinojson.org/v6/assistant/
     DynamicJsonDocument jsonBuffer(capacity);
     jsonBuffer["matrixUsername"] = matrixUsername;
     jsonBuffer["matrixPassword"] = matrixPassword;
-    jsonBuffer["matrixRoom"] = matrixRoom;
-    jsonBuffer["matrixMessage"] = matrixMessage;
+    jsonBuffer["notifiedEndpoint"] = notifiedEndpoint;
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -145,8 +139,7 @@ void handleAdmin() {
     "<form method='post'>" +
     "<div><label for='matrixUsername'>matrixUsername  </label><input name='matrixUsername' id='matrixUsername' value='" + matrixUsername + "'></div>" +
     "<div><label for='matrixPassword'>matrixPassword  </label><input name='matrixPassword' id='matrixPassword' value='" + matrixPassword + "'></div>" +
-    "<div><label for='matrixRoom'>matrixRoom  </label><input name='matrixRoom' id='matrixRoom' value='" + matrixRoom + "'></div>" +
-    "<div><label for='matrixMessage'>matrixMessage  </label><input name='matrixMessage' id='matrixMessage' value='" + matrixMessage + "'></div>" +
+    "<div><label for='notifiedEndpoint'>notifiedEndpoint  </label><input name='notifiedEndpoint' id='notifiedEndpoint' value='" + notifiedEndpoint + "'></div>" +
     "<div><button>Submit</button></div></form>"
     "</body></html>";
   httpServer.send(200, "text/html", html);
@@ -158,15 +151,17 @@ void handleNotFound() {
 BearSSL::WiFiClientSecure secureClient;
 HTTPClient http;
 void notifyFuzIsOpen(bool fuzIsOpen) {
-  http.begin(secureClient, "https://presence-button-staging.glitch.me/status?fuzisopen=" + String(fuzIsOpen));
+  http.begin(secureClient, notifiedEndpoint + String(fuzIsOpen));
   http.setAuthorization(matrixUsername.c_str(), matrixPassword.c_str());
   int httpCode = http.GET();
+  Serial.println("notifyFuzIsOpen body: " + http.getString());
   Serial.println("notifyFuzIsOpen return code: " + String(httpCode));
   http.end();
-  if(httpCode != 200){ // something is wrong, bad network or misconfigured credentials
-    ticker.attach(0.1, blinkLED);
+  if (httpCode != 200) { // something is wrong, bad network or misconfigured credentials
+    ledTicker.attach(0.1, blinkLED);
   } else {
-    ticker.detach();
+    ledTicker.detach();
+    digitalWrite(LED_PIN, LOW); // ensure the LED is lit
   }
 }
 
@@ -182,8 +177,8 @@ void setup() {
   //set button pin as input
   pinMode(BUTTON_PIN, INPUT);
 
-  // start ticker with 1 because we start in AP mode and try to connect
-  ticker.attach(1.1, blinkLED);
+  // start ledTicker with 1 because we start in AP mode and try to connect
+  ledTicker.attach(1.1, blinkLED);
 
   Serial.println(F("mounting FS..."));
 
@@ -200,7 +195,7 @@ void setup() {
         std::unique_ptr<char[]> buf(new char[size]);
 
         configFile.readBytes(buf.get(), size);
-        const size_t capacity = JSON_OBJECT_SIZE(4) + 440; // https://arduinojson.org/v6/assistant/
+        const size_t capacity = JSON_OBJECT_SIZE(3) + 440; // https://arduinojson.org/v6/assistant/
         DynamicJsonDocument jsonBuffer(capacity);
         auto error = deserializeJson(jsonBuffer, buf.get());
         if (error) {
@@ -217,10 +212,8 @@ void setup() {
           matrixUsername = m0;
           String m1 = jsonBuffer["matrixPassword"];
           matrixPassword = m1;
-          String m2 = jsonBuffer["matrixRoom"];
-          matrixRoom = m2;
-          String m3 = jsonBuffer["matrixMessage"];
-          matrixMessage = m3;
+          String m2 = jsonBuffer["notifiedEndpoint"];
+          notifiedEndpoint = m2;
         }
         configFile.close();
       }
@@ -237,8 +230,7 @@ void setup() {
   // id/name placeholder/prompt default length
   WiFiManagerParameter customMatrixUsername("Matrix username", "Matrix username", matrixUsername.c_str(), 50);
   WiFiManagerParameter customMatrixPassword("Matrix password", "Matrix password", matrixPassword.c_str(), 50);
-  WiFiManagerParameter customMatrixRoom("Matrix room", "Matrix room", matrixRoom.c_str(), 200);
-  WiFiManagerParameter customMatrixMessage("Matrix message", "Matrix message", matrixMessage.c_str(), 500);
+  WiFiManagerParameter customNotifiedEndpoint("Notified endpoint", "Notified endpoint", notifiedEndpoint.c_str(), 200);
 
   //WiFiManager
   //Local intialization. Once its business is done, there is no need to keep it around
@@ -258,8 +250,7 @@ void setup() {
   //add all your parameters here
   wifiManager.addParameter(&customMatrixUsername);
   wifiManager.addParameter(&customMatrixPassword);
-  wifiManager.addParameter(&customMatrixRoom);
-  wifiManager.addParameter(&customMatrixMessage);
+  wifiManager.addParameter(&customNotifiedEndpoint);
 
   //reset settings - for testing
   //wifiManager.resetSettings();
@@ -283,25 +274,23 @@ void setup() {
 
   //if you get here you have connected to the WiFi
   Serial.println(F("connected...yeey :)"));
-  ticker.detach();
+  ledTicker.detach();
   //keep LED on
   digitalWrite(LED_PIN, LOW);
 
   //read updated parameters
   matrixUsername = customMatrixUsername.getValue();
   matrixPassword = customMatrixPassword.getValue();
-  matrixRoom = customMatrixRoom.getValue();
-  matrixMessage = customMatrixMessage.getValue();
+  notifiedEndpoint = customNotifiedEndpoint.getValue();
 
   //save the custom parameters to FS
   if (shouldSaveConfig) {
     Serial.println(F("saving config"));
-    const size_t capacity = JSON_OBJECT_SIZE(4) + 440; // https://arduinojson.org/v6/assistant/
+    const size_t capacity = JSON_OBJECT_SIZE(3) + 440; // https://arduinojson.org/v6/assistant/
     DynamicJsonDocument jsonBuffer(capacity);
     jsonBuffer["matrixUsername"] = matrixUsername;
     jsonBuffer["matrixPassword"] = matrixPassword;
-    jsonBuffer["matrixRoom"] = matrixRoom;
-    jsonBuffer["matrixMessage"] = matrixMessage;
+    jsonBuffer["notifiedEndpoint"] = notifiedEndpoint;
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile) {
@@ -337,7 +326,7 @@ void setup() {
 bool buttonState = HIGH;
 bool previousButtonState = HIGH;
 long previousMillis = 0;
-const long getMatrixMessagesInterval = 5000;
+const long notifyInterval = 5000;
 unsigned long pressedTime = millis();
 void loop() {
   MDNS.update();
@@ -356,14 +345,13 @@ void loop() {
     delay(500);
     ESP.reset();
   }
-
   unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis > getMatrixMessagesInterval) {
+  if (currentMillis - previousMillis > notifyInterval) {
     previousMillis = currentMillis;
     notifyFuzIsOpen(fuzIsOpen);
   }
 
-  if(!fuzIsOpen){
+  if (!fuzIsOpen) {
     digitalWrite(RELAY_PIN, HIGH);
   }
 
@@ -374,7 +362,7 @@ void loop() {
     Serial.println("Button pressed");
     digitalWrite(RELAY_PIN, LOW);
     fuzIsOpen = true;
+    notifyFuzIsOpen(fuzIsOpen);
   }
-  digitalWrite(LED_PIN, LOW); // ensure the LED is lit
   previousButtonState = buttonState;
 }
