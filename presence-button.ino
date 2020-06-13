@@ -88,7 +88,7 @@ void handleAdmin() {
       httpServer.sendHeader("Location", httpServer.uri(), true);
       httpServer.send(302, "text/plain", "");
       delay(500);
-      ESP.reset();
+      ESP.restart();
       return;
     }
   }
@@ -268,7 +268,7 @@ void setup() {
     Serial.println(F("failed to connect and hit timeout"));
     delay(3000);
     //reset and try again, or maybe put it to deep sleep
-    ESP.reset();
+    ESP.restart();
     delay(5000);
   }
 
@@ -343,7 +343,7 @@ void loop() {
     wifiManager.resetSettings();
     SPIFFS.format();
     delay(500);
-    ESP.reset();
+    ESP.restart();
   }
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis > notifyInterval) {
